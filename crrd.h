@@ -1,4 +1,5 @@
-/* crrd.h
+/*
+ * crrd.h
  */
 
 #include <stdint.h>
@@ -11,17 +12,17 @@
 typedef uint64_t rrdt_t;
 
 typedef struct rrd {
-    char *name;        /* name */
-    rrdt_t resolution; /* time between successive entries */
-    int capacity;      /* capacity of database */
-    size_t size;       /* size of an entry */
-    void *entries;     /* pointer to entries */
-    int head;          /* head (beginning) */
-    int tail;          /* tail (end) */
-    rrdt_t start;      /* begin time of current bucket */
-    rrdt_t last;       /* last update time */
-    void (*zero)(struct rrd *);
-    void (*update)(struct rrd *, void *);
+	char *name;	    /* name */
+	rrdt_t resolution;  /* time between successive entries */
+	int capacity;	    /* capacity of database */
+	size_t size;	    /* size of an entry */
+	void *entries;	    /* pointer to entries */
+	int head;	    /* head (beginning) */
+	int tail;	    /* tail (end) */
+	rrdt_t start;	    /* begin time of current bucket */
+	rrdt_t last;	    /* last update time */
+	void (*zero)(struct rrd *);
+	void (*update)(struct rrd *, void *);
 } rrd_t;
 
 rrdt_t tv2rrdt(struct timeval *tv);
