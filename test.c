@@ -336,7 +336,7 @@ dbrrd_test(void)
 #define LIMIT 150000
 
 	fprintf(stderr, "dbrrd_test\n");
-	h = dbrrd_create(dbrrd_periods, f_update, f_zero);
+	h = dbrrd_create(dbrrd_periods, sizeof(float), f_update, f_zero);
 
 	/* For 0..LIMIT-1 seconds, add 5.0. All averages should be 5.0,
 	 * and we will try retreival going back in time for each of

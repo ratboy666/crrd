@@ -413,14 +413,14 @@ dbrrd_destroy(rrd_t *h)
 }
 
 rrd_t *
-dbrrd_create(dbrrd_spec_t *p, void *update, void *zero)
+dbrrd_create(dbrrd_spec_t *p, size_t sz, void *update, void *zero)
 {
 	rrd_t *h;
 	rrd_t *r;
 
 	h = NULL;
 	while (p->capacity > 0) {
-		r = rrd_create("dbrrd", &p->tv, p->capacity, sizeof (float));
+		r = rrd_create("dbrrd", &p->tv, p->capacity, sz);
 		if (r == NULL) {
 #ifdef STANDALONE
 			fprintf(stderr, "rrd_create failed\n");

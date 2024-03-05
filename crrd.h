@@ -48,4 +48,4 @@ int dbrrd_query(rrd_t *r, struct timeval *tv, void **vp, struct timeval *res);
 void dbrrd_add_at(rrd_t *r, void *vp, struct timeval *t);
 void dbrrd_add(rrd_t *r, void *v);
 void dbrrd_destroy(rrd_t *h);
-rrd_t *dbrrd_create(dbrrd_spec_t *p, void *update, void *zero);
+rrd_t *dbrrd_create(dbrrd_spec_t *p, size_t sz, void *update, void *zero);
