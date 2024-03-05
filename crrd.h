@@ -23,9 +23,14 @@ typedef struct rrd {
 	rrdt_t start;	    /* begin time of current bucket */
 	rrdt_t last;	    /* last update time */
 	struct rrd *next;   /* allow for list of rrd */
-	void (*zero)(struct rrd *);
+	void (*zero)(struct rrd *, void *);
 	void (*update)(struct rrd *, void *);
 } rrd_t;
+
+typedef struct dbrrd_spec {
+	int capacity;
+	struct timeval tv;
+} dbrrd_spec_t;
 
 rrdt_t tv2rrdt(struct timeval *tv);
 void rrdt2tv(struct timeval *tv, rrdt_t rt);
@@ -39,4 +44,8 @@ void rrd_add_at(rrd_t *r, void *v, struct timeval *tv);
 void *rrd_get(rrd_t *r, int i);
 void rrd_add(rrd_t *r, void *v);
 void rrd_setfunctions(rrd_t *r, void *fupdate, void *fzero);
-
+int dbrrd_query(rrd_t *r, struct timeval *tv, void **vp, struct timeval *res);
+void dbrrd_add_at(rrd_t *r, void *vp, struct timeval *t);
+void dbrrd_add(rrd_t *r, void *v);
+void dbrrd_destroy(rrd_t *h);
+rrd_t *dbrrd_create(dbrrd_spec_t *p, void *update, void *zero);

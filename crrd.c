@@ -58,7 +58,7 @@ default_update(rrd_t *r, void *pv)
 
 /* Zero to tail */
 static
-void default_zero(rrd_t *r)
+void default_zero(rrd_t *r, void *pv)
 {
 #ifdef STANDALONE
 	fprintf(stderr, "zero function not filled in\n");
@@ -277,7 +277,12 @@ rrd_add_at(rrd_t *r, void *v, struct timeval *tv)
 	 */
 	while (r->start < t0) {
 		forward(r);
-		(r->zero)(r);
+		/*
+		 * "Zero" is a bit of a misnomer. For txg, we want to plant
+		 * the previous txg. For calculation, we want to plant either
+		 * the present or previous value.
+		 */
+		(r->zero)(r, v);
 	}
 	rrd_store(r, v);
 	r->start = t0;
@@ -319,3 +324,116 @@ rrd_setfunctions(rrd_t *r, void *fupdate, void *fzero)
 	r->zero = fzero;
 }
 
+/*
+ * The rrd_find function looks in the rrd for the time t. It returns
+ * the value from the tightest period that contains the specified
+ * time. Value and resolution are returned. Return is 1 if we have
+ * data, 0 if not.
+ *
+ * The rrds are linked together -- most precise first, and ordered.
+ * We find the first rrd that covers our time.
+ */
+int dbrrd_query(rrd_t *r, struct timeval *tv, void **vp, struct timeval *res)
+{
+	rrdt_t t, t0, start;
+	int i;
+
+	t = tv2rrdt(tv);
+
+	/* Find for time in future fails */
+	if (t > r->last) {
+		return (0);
+	}
+
+	/*
+	 * If the rrd is empty, there is no data. Since all rrds are
+	 * added to "in parallel", they are all empty (or not)
+	 */
+	if (rrd_len(r) == 0) {
+		return (0);
+	}
+
+	while (r != NULL) {
+
+		t0 = find_period(t, r->resolution);
+
+		/*
+		 * Time start for this rdd (may not be full). r->start
+		 * is the start of the active period.
+		 */
+		start = r->start - (r->resolution * (rrd_len(r) - 1));
+
+		/* Is the query time within the coverage of this rrd? */
+		if (t0 >= start) {
+
+			i = (t0 - start) / r->resolution;
+			*vp = rrd_get(r, i);
+			rrdt2tv(res, r->resolution);
+			return (1);
+		}
+
+		/* Query time is out of this rrd, try next rrd (which
+		 * is a bit "fuzzier".
+		 */
+		r = r->next;
+	}
+
+	/* Too old, no record */
+	return (0);
+}
+
+void
+dbrrd_add_at(rrd_t *r, void *vp, struct timeval *t)
+{
+	while (r != NULL) {
+	    rrd_add_at(r, vp, t);
+	    r = r->next;
+	}
+}
+
+void
+dbrrd_add(rrd_t *r, void *v)
+{
+	struct timeval now;
+
+	gettimeofday(&now, NULL);
+	dbrrd_add_at(r, v, &now);
+}
+
+void
+dbrrd_destroy(rrd_t *h)
+{
+	rrd_t *p;
+
+	while (h != NULL) {
+	    p = h->next;
+	    rrd_destroy(h);
+	    h = p;
+	}
+}
+
+rrd_t *
+dbrrd_create(dbrrd_spec_t *p, void *update, void *zero)
+{
+	rrd_t *h;
+	rrd_t *r;
+
+	h = NULL;
+	while (p->capacity > 0) {
+		r = rrd_create("dbrrd", &p->tv, p->capacity, sizeof (float));
+		if (r == NULL) {
+#ifdef STANDALONE
+			fprintf(stderr, "rrd_create failed\n");
+#endif
+			if (h != NULL) {
+				dbrrd_destroy(h);
+			}
+			return NULL;
+		}
+		rrd_setfunctions(r, update, zero);
+		r->next = h;
+		h = r;
+		++p;
+	}
+	return h;
+}
