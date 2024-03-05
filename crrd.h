@@ -5,9 +5,10 @@
 #include <stdint.h>
 #include <sys/time.h>
 
-/* Internal times in the rrd are maintained as rrdt_t, which is in
+/*
+ * Internal times in the rrd are maintained as rrdt_t, which is in
  * seconds, milliseconds, microseconds... actual unit is dependent
- * on the system.
+ * on the system/usecase.
  */
 typedef uint64_t rrdt_t;
 
@@ -21,6 +22,7 @@ typedef struct rrd {
 	int tail;	    /* tail (end) */
 	rrdt_t start;	    /* begin time of current bucket */
 	rrdt_t last;	    /* last update time */
+	struct rrd *next;   /* allow for list of rrd */
 	void (*zero)(struct rrd *);
 	void (*update)(struct rrd *, void *);
 } rrd_t;

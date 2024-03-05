@@ -22,3 +22,5 @@ time proportional to the amount to time (in periods) to skip. As most uses have 
 
 Because of this characteristic, multiple rrd structures can be updated concurrently. The result will be O(1) (constant) update time. resolution and length are adjustable for each rrd, and these can be used to determine the most precise queue to retrieve given data from.
 
+test.c has the prototype of the the "multi rrd" functions - create, destroy, add and find.
+

@@ -38,7 +38,7 @@
 #include "crrd.c"
 
 void
-period_tests(void)
+period_test(void)
 {
 	struct tm tm;
 	char *s;
@@ -64,7 +64,8 @@ period_tests(void)
 		{ NULL, 0, NULL }
 	};
 
-	/* Very odd effect in gcc library -- if I do not do this, the
+	/*
+	 * Very odd effect in gcc library -- if I do not do this, the
 	 * actual test data fails ?!? It appears that tm is not fully
 	 * populated by (eg) strptime(). This may be a bug in GNU
 	 * strptime(). Note that we do set TZ=GMT as well.
@@ -75,7 +76,7 @@ period_tests(void)
 	t = 0;
 	tm = *gmtime(&t);
 
-	fprintf(stderr, "period tests\n");
+	fprintf(stderr, "period_test\n");
 	putenv("TZ=GMT");
 	for (int i = 0; tests[i].in != NULL; ++i) {
 		strptime(tests[i].in, "%Y-%m-%dT%H:%M:%SZ", &tm);
@@ -174,12 +175,9 @@ simple_test(void)
 	fprintf(stderr, "simple_test complete\n");
 }
 
-/* avg -= avg / N;
+/*
+ * avg -= avg / N;
  * avg += new_sample / N;
- *
- * If changed by M values
- * new average =
- *  old average * (n-len(M))/n + (sum of values in M)/n
  *
  *  https://stackoverflow.com/questions/12636613/how-to-calculate-moving-average-without-keeping-the-count-and-data-total
  */
@@ -291,7 +289,7 @@ complex_test(void)
 	}
 
 	fprintf(stderr, "getting data\n");
-	for (int i; expected[i].index >= 0; ++i) {
+	for (int i = 0; expected[i].index >= 0; ++i) {
 		p = rrd_get(r, expected[i].index);
 		if (p == NULL) {
 			fprintf(stderr, "rrd_get returned NULL\n");
@@ -317,13 +315,188 @@ complex_test(void)
 	fprintf(stderr, "complex_test complete\n");
 }
 
+/*
+ * The rrd_find function looks in the rrd for the time t. It returns
+ * the value from the tightest period that contains the specified
+ * time. Value and resolution are returned. Return is 1 if we have
+ * data, 0 if not.
+ *
+ * The rrds are linked together -- most precise first, and ordered.
+ * We find the first rrd that covers our time.
+ */
+int multi_find(rrd_t *r, struct timeval *tv, void **vp, struct timeval *res)
+{
+	rrdt_t t, t0, start;
+	int i;
+
+	t = tv2rrdt(tv);
+
+	/* Find for time in future fails */
+	if (t > r->last) {
+		return (0);
+	}
+
+	/*
+	 * If the rrd is empty, there is no data. Since all rrds are
+	 * added to "in parallel", they are all empty (or not)
+	 */
+	if (rrd_len(r) == 0) {
+		return (0);
+	}
+
+	while (r != NULL) {
+
+		t0 = find_period(t, r->resolution);
+
+		/*
+		 * Time start for this rdd (may not be full). r->start
+		 * is the start of the active period.
+		 */
+		start = r->start - (r->resolution * (rrd_len(r) - 1));
+
+		/* Is the query time within the coverage of this rrd? */
+		if (t0 >= start) {
+
+			i = (t0 - start) / r->resolution;
+			*vp = rrd_get(r, i);
+			rrdt2tv(res, r->resolution);
+			return (1);
+		}
+
+		/* Query time is out of this rrd, try next rrd (which
+		 * is a bit "fuzzier".
+		 */
+	}
+
+	/* Too old, no record */
+	return (0);
+}
+
+void
+multi_add_at(rrd_t *r, void *vp, struct timeval *t)
+{
+	while (r != NULL) {
+	    rrd_add_at(r, vp, t);
+	    r = r->next;
+	}
+}
+
+void
+multi_destroy(rrd_t *h)
+{
+	rrd_t *p;
+
+	while (h != NULL) {
+	    p = h->next;
+	    fprintf(stderr, "freeing %s\n", h->name);
+	    rrd_destroy(h);
+	    h = p;
+	}
+}
+
+rrd_t *
+multi_create(void)
+{
+	rrd_t *h;
+	rrd_t *r;
+	struct timeval resolution = { 0, 0 };
+
+	/*
+	 * We are going to keep 100 1 seconds, 100 10 seconds,
+	 * 100 100 seconds and 100 1000 seconds. This covers
+	 * 1 day. (27.77 hours)
+	 *
+	 * Since rrd has a single next pointer, we create these
+	 * in descending period size and link them.
+	 */
+
+	/* 1000 seconds */
+	resolution.tv_sec = 1000;
+	r = rrd_create("multi1000", &resolution, 100, sizeof (float));
+	if (r == NULL) {
+		fprintf(stderr, "rrd_create failed\n");
+		exit(EXIT_FAILURE);
+	}
+	rrd_setfunctions(r, f_update, f_zero);
+	h = r;
+
+	/* 100 seconds */
+	resolution.tv_sec = 100;
+	r = rrd_create("multi100", &resolution, 100, sizeof (float));
+	if (r == NULL) {
+		fprintf(stderr, "rrd_create failed\n");
+		exit(EXIT_FAILURE);
+	}
+	rrd_setfunctions(r, f_update, f_zero);
+	r->next = h;
+	h = r;
+
+	/* 10 seconds */
+	resolution.tv_sec = 10;
+	r = rrd_create("multi10", &resolution, 100, sizeof (float));
+	if (r == NULL) {
+		fprintf(stderr, "rrd_create failed\n");
+		exit(EXIT_FAILURE);
+	}
+	rrd_setfunctions(r, f_update, f_zero);
+	r->next = h;
+	h = r;
+
+        /* 1 seconds */
+	resolution.tv_sec = 1;
+	r = rrd_create("multi1", &resolution, 100, sizeof (float));
+	if (r == NULL) {
+		fprintf(stderr, "rrd_create failed\n");
+		exit(EXIT_FAILURE);
+	}
+	rrd_setfunctions(r, f_update, f_zero);
+	r->next = h;
+	h = r;
+
+	/*
+	 * multi1 -> multi10 -> multi100 -> multi1000 -> null
+	 */
+}
+
+void
+multi_test(void)
+{
+	rrd_t *h;
+	struct timeval tv = { 0, 0 };
+	struct timeval res;
+	float v;
+	int n;
+	void *p;
+
+	fprintf(stderr, "multi_test\n");
+	h = multi_create();
+
+	v = 5.0;
+	tv.tv_sec = 0;
+	multi_add_at(h, &v, &tv);
+
+	v = 6.0;
+	tv.tv_sec = 1;
+	multi_add_at(h, &v, &tv);
+
+	v = 7.0;
+	tv.tv_sec = 2;
+	multi_add_at(h, &v, &tv);
+
+	n = multi_find(h, &tv, &p, &res);
+
+	multi_destroy(h);
+	fprintf(stderr, "multi_test complete\n");
+}
+
 int
 main(int ac, char **av)
 {
 	printf("crrd - C RRD Database\n");
-	period_tests();
+	period_test();
 	simple_test();
 	complex_test();
+	multi_test();
 	return (EXIT_SUCCESS);
 }
 

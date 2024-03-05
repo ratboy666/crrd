@@ -134,6 +134,8 @@ rrd_create(char *s, struct timeval *res, unsigned cap, size_t sz)
 	}
 	r->name = s;
 	r->resolution = tv2rrdt(res);
+	r->next = NULL;
+	r->start = r->last = 0;
 	/* Allocate the database
 	 */
 	r->entries = malloc(cap * sz);
