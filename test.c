@@ -30,6 +30,7 @@
  * simply uses a wider period. The slots are used round robin.
  *
  * Fred Weigel, March 2024
+ * From an idea by Allan Jude
  */
 
 #define _XOPEN_SOURCE
@@ -142,7 +143,7 @@ simple_test(void)
 	double *p;
 
 	fprintf(stderr, "simple_test\n");
-	r = rrd_create("test", &resolution, 10, sizeof (double));
+	r = rrd_create("simple", &resolution, 10, sizeof (double));
 	if (r == NULL) {
 		fprintf(stderr, "rrd_create failed\n");
 		exit(EXIT_FAILURE);
@@ -261,7 +262,7 @@ complex_test(void)
 	};
 
 	fprintf(stderr, "complex_test\n");
-	r = rrd_create("test", &resolution, 10, sizeof (float));
+	r = rrd_create("complex", &resolution, 10, sizeof (float));
 	if (r == NULL) {
 		fprintf(stderr, "rrd_create failed\n");
 		exit(EXIT_FAILURE);
@@ -336,7 +337,8 @@ dbrrd_test(void)
 #define LIMIT 150000
 
 	fprintf(stderr, "dbrrd_test\n");
-	h = dbrrd_create(dbrrd_periods, sizeof(float), f_update, f_zero);
+	h = dbrrd_create("dbrrd", dbrrd_periods, sizeof(float),
+		f_update, f_zero);
 
 	/* For 0..LIMIT-1 seconds, add 5.0. All averages should be 5.0,
 	 * and we will try retreival going back in time for each of
@@ -458,6 +460,80 @@ dbrrd_test(void)
 	fprintf(stderr, "dbrrd_test complete\n");
 }
 
+/* Update is called to update the rolling average in a period. This
+ * implements a no-operation for use with txg, as averaging makes no
+ * sense. We keep the existing value, as we prefer the earlier txg
+ * for historical query.
+ * Note that if the time is within spitting distance of the
+ * current time, we should just use the most recent txg as the result
+ * of a query.
+ */
+void
+txg_update(rrd_t *r, void *pv)
+{
+	rrd_t *h;
+
+	fprintf(stderr, "dbrrd_test\n");
+	dbrrd_destroy(h);
+	fprintf(stderr, "dbrrd_test complete\n");
+}
+
+/* This is used to fill time periods. We always have a "previous" time
+ * slot, so it is safe to reference current-1 (the previous time guarantee
+ * is because if the rrd is empty, the value is simply stored, and we do
+ * NOT take this path). This is used because the txg for this interval is
+ * NOT the current -- it is the previous, because we want to err on the side
+ * of earlier txg, not later.
+ */
+static void
+txg_zero(rrd_t *r, void *p)
+{
+    int n;
+    void *v;
+
+    if (r->tail == 0)
+        n = r->capacity - 1;
+    else
+        n = r->tail - 1;
+    v = r->entries + (n * r->size);
+    rrd_store(r, v);
+}
+
+void
+txg_test(void)
+{
+	rrd_t *h;
+
+	/* Must be sorted descending by timeval
+	 *
+	 * These are the period definitions
+	 *
+	 *       60 seconds per minute
+	 *     3600 seconds per hour
+	 *    86400 seconds per day
+	 * 31536000 seconds per year
+	 *     1440 minutes per day
+	 *
+	 * So, this keeps one day of txg at 1 minute resolution,
+	 * one year of txg at 1 day resolution, and 10 years of
+	 * txg at 1 year resolution.
+	 * 
+	 * Space taken is under 20K bytes.
+	 */
+	dbrrd_spec_t dbrrd_periods[] = {
+		{   10, { 31536000, 0 } }, 
+		{  365, {    86400, 0 } }, 
+		{ 1440, {       60, 0 } }, 
+		{ 0, { 0, 0 } }, 
+	};
+
+	fprintf(stderr,"txg_test\n");
+	h = dbrrd_create("txg", dbrrd_periods, sizeof(uint64_t),
+		txg_update, txg_zero);
+	dbrrd_destroy(h);
+	fprintf(stderr,"txg_test complete\n");
+}
+
 int
 main(int ac, char **av)
 {
@@ -466,6 +542,7 @@ main(int ac, char **av)
 	simple_test();
 	complex_test();
 	dbrrd_test();
+	txg_test();
 	return (EXIT_SUCCESS);
 }
 

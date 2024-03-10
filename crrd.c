@@ -33,6 +33,7 @@
  * Uses malloc() free() memcpy() are used in both modes.
  *
  * Fred Weigel, March 2024
+ * From an idea by Allan Jude
  */
 
 /*#define STANDALONE*/
@@ -413,14 +414,14 @@ dbrrd_destroy(rrd_t *h)
 }
 
 rrd_t *
-dbrrd_create(dbrrd_spec_t *p, size_t sz, void *update, void *zero)
+dbrrd_create(char *name, dbrrd_spec_t *p, size_t sz, void *update, void *zero)
 {
 	rrd_t *h;
 	rrd_t *r;
 
 	h = NULL;
 	while (p->capacity > 0) {
-		r = rrd_create("dbrrd", &p->tv, p->capacity, sz);
+		r = rrd_create(name, &p->tv, p->capacity, sz);
 		if (r == NULL) {
 #ifdef STANDALONE
 			fprintf(stderr, "rrd_create failed\n");
