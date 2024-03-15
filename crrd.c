@@ -123,13 +123,20 @@ void forward(rrd_t *r)
 	r->start = find_period(r->start + r->resolution + 1, r->resolution); 
 }
 
+/* Return tail of rrd */
+int
+rrd_tail(rrd_t *r)
+{
+	return (r->tail);
+}
+
 /* Create a new rrd of capacity with resolution res */
 rrd_t *
 rrd_create(char *s, struct timeval *res, unsigned cap, size_t sz)
 {
 	rrd_t *r;
 
-	r = malloc(sizeof (struct rrd));
+	r = malloc(sizeof (struct rrd) + (cap * sz));
 	if (r == NULL) {
 		return (NULL);
 	}
@@ -137,13 +144,6 @@ rrd_create(char *s, struct timeval *res, unsigned cap, size_t sz)
 	r->resolution = tv2rrdt(res);
 	r->next = NULL;
 	r->start = r->last = 0;
-	/* Allocate the database
-	 */
-	r->entries = malloc(cap * sz);
-	if (r->entries == NULL) {
-	    free(r);
-	    return (NULL);
-	}
 	r->capacity = cap;
 	r->size = sz;
 	r->head = r->tail = -1;
@@ -211,7 +211,6 @@ rrd_debug(rrd_t *r)
 void
 rrd_destroy(rrd_t *r)
 {
-	free(r->entries);
 	free(r);
 }
 
@@ -219,7 +218,7 @@ rrd_destroy(rrd_t *r)
 static
 void rrd_store(rrd_t *r, void *v)
 {
-	memcpy(r->entries + (r->tail * r->size), v, r->size);
+	memcpy((char *)r->entries + (r->tail * r->size), v, r->size);
 }
 
 /*
@@ -290,6 +289,13 @@ rrd_add_at(rrd_t *r, void *v, struct timeval *tv)
 	r->last = t;
 }
 
+/* Return entry pointer for index n */
+void *
+rrd_entry(rrd_t *r, int i)
+{
+	return (char *)r->entries + (i * r->size);
+}
+
 /* Return value at indicated index -- returns a void * to the data */
 void *
 rrd_get(rrd_t *r, int i)
@@ -304,7 +310,7 @@ rrd_get(rrd_t *r, int i)
 	if (n >= r->capacity) {
 		n -= r->capacity;
 	}
-	return r->entries + (n * r->size);
+	return rrd_entry(r, n);
 }
 
 /* Add value at the current time */

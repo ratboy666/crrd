@@ -193,7 +193,7 @@ f_update(rrd_t *r, void *pv)
 	rrdt_t res;
 
 	v = *(float *)pv;
-	old = *(float *)(r->entries + (r->tail * r->size)); 
+	old = *(float *)rrd_entry(r, rrd_tail(r));
 	res = r->resolution / 1000;
 	new = old;
 	new -= new / res;
@@ -468,18 +468,15 @@ typedef struct txg_store {
 
 /*
  * Update is called to update the rolling average in a period. This
- * implements a no-operation for use with txg, as averaging makes no
- * sense. We keep the existing value, as we prefer the earlier txg
- * for historical query.
- * Note that if the time is within spitting distance of the
- * current time, we should just use the most recent txg as the result
- * of a query.
+ * implements a "broadening" of txg range, as averaging makes no
+ * sense.
  */
 void
 txg_update(rrd_t *r, void *pv)
 {
 	/*
-	 * Averaging, or otherwise merging txgs make no sense at all.
+	 * Averaging txgs make no sense at all.
+	 *
 	 * In general, we want to return the earliest or latest txg in
 	 * a given time period. The txg is to be used to bracket a ZFS
 	 * scrub operation (from:to). The from should be the earliest.
@@ -490,7 +487,7 @@ txg_update(rrd_t *r, void *pv)
 	 * or even a struct).
 	 *
 	 * Now, txg_update() makes sense because it holds the discrete
-	 * (low/high) txg for each time bracket.* Note that the merging
+	 * (low/high) txg for each time bracket. Note that the merging
 	 * is very simple: we just keep the smallest and largest!
 	 * Now, on entry for a txg, there sill be only one txg value
 	 * entered AT THIS TIME. simply set both low and high to the
@@ -500,10 +497,10 @@ txg_update(rrd_t *r, void *pv)
 	txg_store_t new;
 	txg_store_t old;
 
-	old = *(txg_store_t *)(r->entries + (r->tail * r->size)); 
+	old = *(txg_store_t *)rrd_entry(r, rrd_tail(r));
 	new = *(txg_store_t *)pv;
 
-	/* Broaden old to cover new */
+	/* Broaden new to cover old */
 	if (old.l < old.l)
 		new.l = old.l;
 	if (old.h > new.h)
@@ -518,6 +515,11 @@ txg_update(rrd_t *r, void *pv)
  * NOT take this path). This is used because the txg for this interval is
  * NOT the current -- it is the previous, because we want to err on the side
  * of earlier txg, not later.
+ *
+ * Missed update periods will result in the same txg pair put into the rrd
+ * multiple times. This is correct, because we have no other data for the
+ * period.This is as if we "smeared" ouselves and is neded to guarantee
+ * constant time lookup.
  */
 static void
 txg_zero(rrd_t *r, void *p)
@@ -527,14 +529,14 @@ txg_zero(rrd_t *r, void *p)
 
     /*
      * There is at least one element in the ring buffer! So tail-1 makes
-     * sense. We may want to assert(tail >= 0 to catch the empty case.
+     * sense. We may want to assert(tail >= 0) to catch the empty case.
      * If tail == 0, the last element is at the end (capacity-1)
      */
-    if (r->tail == 0)
-        n = r->capacity - 1;
+    if (rrd_tail(r) == 0)
+        n = rrd_capacity(r) - 1;
     else
-        n = r->tail - 1;
-    v = r->entries + (n * r->size);
+        n = rrd_tail(r) - 1;
+    v = rrd_entry(r, n);
     /*
      * And store that last element at tail (as the new element). Yes,
      * we call it "zero" and it does not zero -- this initializes the
@@ -566,9 +568,9 @@ txg_test(void)
 	 * Space taken is under 20K bytes.
 	 */
 	dbrrd_spec_t dbrrd_periods[] = {
-		{   10, { 31536000, 0 } }, 
-		{  365, {    86400, 0 } }, 
-		{ 1440, {       60, 0 } }, 
+		{   10, { 31536000, 0 } }, /* 10 years */
+		{  365, {    86400, 0 } }, /* 365 days - 1 year in day brackets */
+		{ 1440, {       60, 0 } }, /* 1440 minutes - 1 day in minute brackets */
 		{ 0, { 0, 0 } }, 
 	};
 
