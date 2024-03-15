@@ -340,7 +340,8 @@ dbrrd_test(void)
 	h = dbrrd_create("dbrrd", dbrrd_periods, sizeof(float),
 		f_update, f_zero);
 
-	/* For 0..LIMIT-1 seconds, add 5.0. All averages should be 5.0,
+	/*
+	 * For 0..LIMIT-1 seconds, add 5.0. All averages should be 5.0,
 	 * and we will try retreival going back in time for each of
 	 * 1, 10, 100, and 1000 second rrds
 	 */
@@ -460,7 +461,13 @@ dbrrd_test(void)
 	fprintf(stderr, "dbrrd_test complete\n");
 }
 
-/* Update is called to update the rolling average in a period. This
+typedef struct txg_store {
+	uint64_t l;
+	uint64_t h;
+} txg_store_t;
+
+/*
+ * Update is called to update the rolling average in a period. This
  * implements a no-operation for use with txg, as averaging makes no
  * sense. We keep the existing value, as we prefer the earlier txg
  * for historical query.
@@ -471,14 +478,41 @@ dbrrd_test(void)
 void
 txg_update(rrd_t *r, void *pv)
 {
-	rrd_t *h;
+	/*
+	 * Averaging, or otherwise merging txgs make no sense at all.
+	 * In general, we want to return the earliest or latest txg in
+	 * a given time period. The txg is to be used to bracket a ZFS
+	 * scrub operation (from:to). The from should be the earliest.
+	 * The to should be the latest. This is arguable! We could
+	 * save TWO txgs per time bracket. And... crrd could return
+	 * them both. Value is, from the perspective of crrd, just a
+	 * void* and that gives flexibility (could be a single value,
+	 * or even a struct).
+	 *
+	 * Now, txg_update() makes sense because it holds the discrete
+	 * (low/high) txg for each time bracket.* Note that the merging
+	 * is very simple: we just keep the smallest and largest!
+	 * Now, on entry for a txg, there sill be only one txg value
+	 * entered AT THIS TIME. simply set both low and high to the
+	 * same. The "smearing" occurs as we enter the value into the
+	 * wider periods.
+	 */
+	txg_store_t new;
+	txg_store_t old;
 
-	fprintf(stderr, "dbrrd_test\n");
-	dbrrd_destroy(h);
-	fprintf(stderr, "dbrrd_test complete\n");
+	old = *(txg_store_t *)(r->entries + (r->tail * r->size)); 
+	new = *(txg_store_t *)pv;
+
+	/* Broaden old to cover new */
+	if (old.l < old.l)
+		new.l = old.l;
+	if (old.h > new.h)
+		new.h = old.h;
+	rrd_store(r, &new);
 }
 
-/* This is used to fill time periods. We always have a "previous" time
+/*
+ * This is used to fill time periods. We always have a "previous" time
  * slot, so it is safe to reference current-1 (the previous time guarantee
  * is because if the rrd is empty, the value is simply stored, and we do
  * NOT take this path). This is used because the txg for this interval is
@@ -491,11 +525,21 @@ txg_zero(rrd_t *r, void *p)
     int n;
     void *v;
 
+    /*
+     * There is at least one element in the ring buffer! So tail-1 makes
+     * sense. We may want to assert(tail >= 0 to catch the empty case.
+     * If tail == 0, the last element is at the end (capacity-1)
+     */
     if (r->tail == 0)
         n = r->capacity - 1;
     else
         n = r->tail - 1;
     v = r->entries + (n * r->size);
+    /*
+     * And store that last element at tail (as the new element). Yes,
+     * we call it "zero" and it does not zero -- this initializes the
+     * element.
+     */
     rrd_store(r, v);
 }
 
@@ -504,7 +548,8 @@ txg_test(void)
 {
 	rrd_t *h;
 
-	/* Must be sorted descending by timeval
+	/*
+	 * Must be sorted descending by timeval
 	 *
 	 * These are the period definitions
 	 *
@@ -528,8 +573,12 @@ txg_test(void)
 	};
 
 	fprintf(stderr,"txg_test\n");
-	h = dbrrd_create("txg", dbrrd_periods, sizeof(uint64_t),
+	h = dbrrd_create("txg", dbrrd_periods, sizeof(txg_store_t),
 		txg_update, txg_zero);
+	/*
+	 * FIXME: we are not actually filling or querying yet.
+	 * Need to add the test vector.
+	 */
 	dbrrd_destroy(h);
 	fprintf(stderr,"txg_test complete\n");
 }
