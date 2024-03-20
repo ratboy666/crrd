@@ -96,7 +96,6 @@ static rrdt_t
 find_period(rrdt_t time, rrdt_t tperiod)
 {
 	rrdt_t rem;
-	rrdt_t start;
 
 	rem = time % tperiod;
 	time -= rem;
@@ -201,8 +200,8 @@ rrd_debug(rrd_t *r)
 	fprintf(stderr, "  tail:       %d\n",  r->tail);
 	fprintf(stderr, "  start:      %ld\n", r->start);
 	fprintf(stderr, "  last:       %ld\n", r->last);
-	fprintf(stderr, "  entries:    %lp\n", r->entries);
-	fprintf(stderr, "  size:       %u\n",  r->size);
+	fprintf(stderr, "  entries:    %p\n",  r->entries);
+	fprintf(stderr, "  size:       %lu\n", r->size);
 	fprintf(stderr, "  len:        %d\n",  rrd_len(r));
 #endif
 }

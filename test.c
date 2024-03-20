@@ -42,12 +42,11 @@ void
 period_test(void)
 {
 	struct tm tm;
-	char *s;
 	char buf[256];
 	time_t t;
 	struct timeval tv;
-	rrdt_t in, tperiod, good_start;
 	rrdt_t start;
+	rrdt_t in, tperiod, good_start;
 	int fails = 0;
 
 	struct {
@@ -501,7 +500,7 @@ txg_update(rrd_t *r, void *pv)
 	new = *(txg_store_t *)pv;
 
 	/* Broaden new to cover old */
-	if (old.l < old.l)
+	if (old.l < new.l)
 		new.l = old.l;
 	if (old.h > new.h)
 		new.h = old.h;
@@ -546,6 +545,129 @@ txg_zero(rrd_t *r, void *p)
 }
 
 void
+txg_add_at(rrd_t *h, uint64_t v, struct timeval *tv)
+{
+	txg_store_t s;
+	s.l = s.h = v;
+	dbrrd_add_at(h, &s, tv);
+}
+
+/*
+ * txg1 test
+ *
+ * This test knows a bit too much about the internals. It will
+ * test the "smearing" into minute, day and year. We are keeping
+ * 10 years,  365 days, and 1440 minutes.
+ */
+void
+txg1(rrd_t *h)
+{
+	struct timeval tv = { 0, 0};
+	struct timeval res;
+	uint64_t txg = 0;
+	int i, r;
+	txg_store_t *ptxg;
+	void *p;
+
+	/*
+	 * First, we are going to enter 1 minute 0..59 seconds. This
+	 * should give us 1..60 spread of txg for minute, day and year.
+	 * Our txgs begin at 1 and monotonically ascend.
+	 */
+	for (i = 0; i < 60; ++i) {
+		tv.tv_sec = i;
+		txg_add_at(h, ++txg, &tv);
+	}
+	/*
+	 * Query midpoint of the minute... 30 seconds.
+	 */
+	tv.tv_sec = 30;
+	r = dbrrd_query(h, &tv, &p, &res);
+	if (r == 0) {
+		fprintf(stderr, "txg1: query at 30 seconds failed\n");
+		exit(EXIT_FAILURE);
+	}
+	ptxg = (txg_store_t *)p;
+	fprintf(stderr, "query at 30 seconds\n");
+	fprintf(stderr, "  res: %ld\n", res.tv_sec);
+	fprintf(stderr, "  l: %lu h: %lu\n", ptxg->l, ptxg->h);
+	/*
+	 * Fill in 60..LIMIT
+	 * 60 seconds per minute,
+	 * 1440 seconds per day
+	 * 365 days per year
+	 * Fill in 11 years
+	 */
+#undef LIMIT
+#define LIMIT (60 * 1440 * 365 * 11)
+	fprintf(stderr, "filling in %lu seconds\n", LIMIT);
+	/*
+	 * On my Thinpad 460, 346 896 000 samples are recorded in
+	 * 18.6 seconds. This is 18 650 332 samples per second
+	 *
+	 * As this represents 11 years of txg generation, at one
+	 * txg per second, 18.6 seconds appears reasonable.
+	 */
+	for (i = 60; i < LIMIT; ++i) {
+		tv.tv_sec = i;
+		txg_add_at(h, ++txg, &tv);
+	}
+	/*
+	 * We will now issue queries:
+	 * 1 second in the future (should fail),
+	 * 30 seconds in the past (should be retrieved from 60 second rrd)
+	 * 86400 seconds in the past (retrieve from day)
+	 * 31536000 seconds in the past (retrieve from years)
+	 */
+	tv.tv_sec = LIMIT + 1; /* 1 second in future */
+	r = dbrrd_query(h, &tv, &p, &res);
+	if (r == 1) {
+		fprintf(stderr, "txg1: at future worked?\n");
+		exit(EXIT_FAILURE);
+	}
+
+	tv.tv_sec = LIMIT - 30; /* 30 seconds in the past */
+	r = dbrrd_query(h, &tv, &p, &res);
+	if (r == 0) {
+		fprintf(stderr, "txg1: at 30 seconds in the past failed?\n");
+		exit(EXIT_FAILURE);
+	}
+	ptxg = (txg_store_t *)p;
+	fprintf(stderr, "query at 30 seconds in the past\n");
+	fprintf(stderr, "  res: %ld\n", res.tv_sec);
+	fprintf(stderr, "  l: %lu h: %lu\n", ptxg->l, ptxg->h);
+
+	tv.tv_sec = LIMIT - 86400 - 30; /* One day in the past */
+	r = dbrrd_query(h, &tv, &p, &res);
+	if (r == 0) {
+		fprintf(stderr, "txg1: at 1 day in the past failed?\n");
+		exit(EXIT_FAILURE);
+	}
+	ptxg = (txg_store_t *)p;
+	fprintf(stderr, "query at 1 day in the past\n");
+	fprintf(stderr, "  res: %ld\n", res.tv_sec);
+	fprintf(stderr, "  l: %lu h: %lu\n", ptxg->l, ptxg->h);
+
+	tv.tv_sec = LIMIT - 31536000 - 30; /* One year in the past */
+	r = dbrrd_query(h, &tv, &p, &res);
+	if (r == 0) {
+		fprintf(stderr, "txg1: at 1 year in the past failed?\n");
+		exit(EXIT_FAILURE);
+	}
+	ptxg = (txg_store_t *)p;
+	fprintf(stderr, "query at 1 year in the past\n");
+	fprintf(stderr, "  res: %ld\n", res.tv_sec);
+	fprintf(stderr, "  l: %lu h: %lu\n", ptxg->l, ptxg->h);
+
+	tv.tv_sec = LIMIT - (11*31536000) - 30; /* 11 years in the past */
+	r = dbrrd_query(h, &tv, &p, &res);
+	if (r == 1) {
+		fprintf(stderr, "txg1: 11 years should be aged out?\n");
+		exit(EXIT_FAILURE);
+	}
+}
+
+void
 txg_test(void)
 {
 	rrd_t *h;
@@ -581,6 +703,7 @@ txg_test(void)
 	 * FIXME: we are not actually filling or querying yet.
 	 * Need to add the test vector.
 	 */
+	txg1(h);
 	dbrrd_destroy(h);
 	fprintf(stderr,"txg_test complete\n");
 }

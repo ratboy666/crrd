@@ -23,4 +23,13 @@ The dbrrd_ functions are the primary way this is to be used. dbrrd_create to cre
 
 Again, all functions are in constant time, based on the number of "periods".  A period is a quantization of time (say minute, second, hour). Updates need to go to all periods being tracked. A query will look at all the periods (worst case). Each period probe is constant time. No dynamic memory allocation is used. Memory used is proportional to the number of samples within the periods (total over all the periods). In general, it is very difficult to use less memory to solve this. (but there may be algorithms of which I am unaware).
 
+Use with TXGs
 
+TXGs (transaction group numbers) are generated and stored. test.c has a test
+case for this. When merged together, the txg structure keeps a range (low/high)
+of transaction group numbers in a time period. The example uses 60 second,
+one day and one year periods. dbrrd_query returns the actual txg range a time
+entry was found in. If used as the beginning of a range, use the low value.
+If the end is desired, use the high value. Filling 11 years of data at one
+second intervals takes 18.6 seconds on my Thinkpad T460. Amortized over
+a decade this is very reasonable.
