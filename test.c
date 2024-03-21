@@ -34,9 +34,18 @@
  */
 
 #define _XOPEN_SOURCE
-#define STANDALONE
+#define TESTING
 
 #include "crrd.c"
+
+/*
+ * Two macros:
+ *
+ * SEC2HR converts time in seconds to hrtime_t
+ * HR2SEC converts hrtime_t to seconds
+ */
+#define SEC2HR(s) ((hrtime_t)((s) * 1000LL * 1000LL * 1000LL))
+#define HR2SEC(s) ((long)((s) / (1000LL * 1000LL * 1000LL)))
 
 void
 period_test(void)
@@ -44,9 +53,8 @@ period_test(void)
 	struct tm tm;
 	char buf[256];
 	time_t t;
-	struct timeval tv;
-	rrdt_t start;
-	rrdt_t in, tperiod, good_start;
+	hrtime_t start;
+	hrtime_t in, tperiod, good_start;
 	int fails = 0;
 
 	struct {
@@ -81,19 +89,13 @@ period_test(void)
 	for (int i = 0; tests[i].in != NULL; ++i) {
 		strptime(tests[i].in, "%Y-%m-%dT%H:%M:%SZ", &tm);
 		t = mktime(&tm);
-		tv.tv_sec = t;
-		tv.tv_usec = 0;
-		in = tv2rrdt(&tv);
+		in = SEC2HR(t);
 
 		strptime(tests[i].start, "%Y-%m-%dT%H:%M:%SZ", &tm);
 		t = mktime(&tm);
-		tv.tv_sec = t;
-		tv.tv_usec = 0;
-		good_start = tv2rrdt(&tv);
+		good_start = SEC2HR(t);
 
-		tv.tv_sec = tests[i].tperiod;
-		tv.tv_usec = 0;
-		tperiod = tv2rrdt(&tv);
+		tperiod = SEC2HR(tests[i].tperiod);
 
 		start = find_period(in, tperiod);
 
@@ -105,14 +107,12 @@ period_test(void)
 		}
 
 		fprintf(stderr, "  good in    %s %i\n", tests[i].in, tests[i].tperiod);
-		rrdt2tv(&tv, start);
-		t = tv.tv_sec;
+		t = HR2SEC(good_start);
 		strftime(buf, 256, "%Y-%m-%dT%H:%M:%SZ", gmtime(&t));
-		fprintf(stderr, "  in         %s %lu\n", buf, start);
+		fprintf(stderr, "  in         %s %lu\n", buf, good_start);
 
 		fprintf(stderr, "  good start %s %lu\n", tests[i].start, good_start);
-		rrdt2tv(&tv, start);
-		t = tv.tv_sec;
+		t = HR2SEC(start);
 		strftime(buf, 256, "%Y-%m-%dT%H:%M:%SZ", gmtime(&t));
 		fprintf(stderr, "  start      %s %lu\n", buf, start);
 	}
@@ -126,23 +126,25 @@ period_test(void)
 static void
 update(rrd_t r, void *v)
 {
+	r = r; v = v;
 }
 
 static void
 zero(rrd_t r, void *v)
 {
+	r = r; v = v;
 }
 
 void
 simple_test(void)
 {
 	rrd_t *r;
-	struct timeval resolution = { 1, 0 };
+	hrtime_t resolution = SEC2HR(1);
 	double v;
 	double *p;
 
 	fprintf(stderr, "simple_test\n");
-	r = rrd_create("simple", &resolution, 10, sizeof (double));
+	r = rrd_create("simple", resolution, 10, sizeof (double));
 	if (r == NULL) {
 		fprintf(stderr, "rrd_create failed\n");
 		exit(EXIT_FAILURE);
@@ -189,11 +191,11 @@ void
 f_update(rrd_t *r, void *pv)
 {
 	float v, old, new;
-	rrdt_t res;
+	hrtime_t res;
 
 	v = *(float *)pv;
 	old = *(float *)rrd_entry(r, rrd_tail(r));
-	res = r->resolution / 1000;
+	res = r->resolution / (1000 * 1000);
 	new = old;
 	new -= new / res;
 	new += v / res;
@@ -212,9 +214,9 @@ void
 complex_test(void)
 {
 	rrd_t *r;
-	struct timeval resolution = { 30, 0 };
+	hrtime_t resolution = SEC2HR(30);
 	time_t t;
-	struct timeval tv;
+	hrtime_t tv;
 	struct tm tm;
 	float v;
 	float *p;
@@ -261,7 +263,7 @@ complex_test(void)
 	};
 
 	fprintf(stderr, "complex_test\n");
-	r = rrd_create("complex", &resolution, 10, sizeof (float));
+	r = rrd_create("complex", resolution, 10, sizeof (float));
 	if (r == NULL) {
 		fprintf(stderr, "rrd_create failed\n");
 		exit(EXIT_FAILURE);
@@ -276,10 +278,9 @@ complex_test(void)
 	for (int i = 0; input[i].ts != NULL; ++i) {
 		strptime(input[i].ts, "%Y-%m-%dT%H:%M:%SZ", &tm);
 		t = mktime(&tm);
-		tv.tv_sec = t;
-		tv.tv_usec = 0;
+		tv = SEC2HR(t);
 		fprintf(stderr, "%2d %s %lu %g\n", i, input[i].ts, t, input[i].val);
-		rrd_add_at(r, (void *)&(input[i].val), &tv);
+		rrd_add_at(r, (void *)&(input[i].val), tv);
 		fprintf(stderr, "  len = %d\n", rrd_len(r));
 	}
 
@@ -319,18 +320,18 @@ void
 dbrrd_test(void)
 {
 	rrd_t *h;
-	struct timeval tv = { 0, 0 };
-	struct timeval res;
+	hrtime_t tv = 0;
+	hrtime_t res;
 	float v;
 	int n;
 	void *p;
 	/* Must be sorted descending by timeval */
 	dbrrd_spec_t dbrrd_periods[] = {
-		{ 100, { 1000, 0 } }, 
-		{ 100, {  100, 0 } }, 
-		{ 100, {   10, 0 } }, 
-		{ 100, {    1, 0 } }, 
-		{ 0, { 0, 0 } }, 
+		{ 100, SEC2HR(1000) }, 
+		{ 100, SEC2HR( 100) }, 
+		{ 100, SEC2HR(  10) }, 
+		{ 100, SEC2HR(   1) }, 
+		{ 0, 0 }, 
 	};
 
 #define LIMIT 150000
@@ -346,113 +347,114 @@ dbrrd_test(void)
 	 */
 	for (int i = 0; i < LIMIT; ++i) {
 		v = 5.0;
-		tv.tv_sec = i;
-		dbrrd_add_at(h, &v, &tv);
+		tv = SEC2HR(i);
+		dbrrd_add_at(h, &v, tv);
 	}
 
 	/* This query is in the future */
-	tv.tv_sec = LIMIT + 1;
-	n = dbrrd_query(h, &tv, &p, &res);
+	tv = SEC2HR(LIMIT + 1);
+	n = dbrrd_query(h, tv, &p, &res);
 	if (n) {
-		fprintf(stderr, "future query allowed\n");
+		fprintf(stderr, "future query allowed?\n");
 		exit(EXIT_FAILURE);
 	}
 
 	/* We query limit of each rrd */
 
 	/* multi1 covers 1..100 seconds */
-	tv.tv_sec = LIMIT - 1;
-	n = dbrrd_query(h, &tv, &p, &res);
+	tv = SEC2HR(LIMIT - 1);
+	n = dbrrd_query(h, tv, &p, &res);
 	if (n) {
 		v = *(float *)p;
 		fprintf(stderr, "%10ld %g +-%ld seconds\n",
-			tv.tv_sec, v, res.tv_sec / 2);
+			HR2SEC(tv), v, HR2SEC(res) / 2);
 	} else {
-		fprintf(stderr, "fail sec = %ld\n", tv.tv_sec);
+		fprintf(stderr, "fail sec = %ld\n", HR2SEC(tv));
 		exit(EXIT_FAILURE);
 	}
-	tv.tv_sec = LIMIT - 100;
-	n = dbrrd_query(h, &tv, &p, &res);
+	tv = SEC2HR(LIMIT - 100);
+	n = dbrrd_query(h, tv, &p, &res);
 	if (n) {
 		v = *(float *)p;
 		fprintf(stderr, "%10ld %g +-%ld seconds\n",
-			tv.tv_sec, v, res.tv_sec / 2);
+			HR2SEC(tv), v, HR2SEC(res) / 2);
 	} else {
-		fprintf(stderr, "fail sec = %ld\n", tv.tv_sec);
+		fprintf(stderr, "fail sec = %ld\n", HR2SEC(tv));
 		exit(EXIT_FAILURE);
 	}
 
 	/* multi10 covers 1..1000 seconds */
-	tv.tv_sec = LIMIT - 100 - 1;
-	n = dbrrd_query(h, &tv, &p, &res);
+	tv = SEC2HR(LIMIT - 100 - 1);
+	n = dbrrd_query(h, tv, &p, &res);
 	if (n) {
 		v = *(float *)p;
 		fprintf(stderr, "%10ld %g +-%ld seconds\n",
-			tv.tv_sec, v, res.tv_sec / 2);
+			HR2SEC(tv), v, HR2SEC(res) / 2);
 	} else {
-		fprintf(stderr, "fail sec = %ld\n", tv.tv_sec);
+		fprintf(stderr, "fail sec = %ld\n", HR2SEC(tv));
 		exit(EXIT_FAILURE);
 	}
-	tv.tv_sec = LIMIT - 1000;
-	n = dbrrd_query(h, &tv, &p, &res);
+	tv = SEC2HR(LIMIT - 1000);
+	n = dbrrd_query(h, tv, &p, &res);
 	if (n) {
 		v = *(float *)p;
 		fprintf(stderr, "%10ld %g +-%ld seconds\n",
-			tv.tv_sec, v, res.tv_sec / 2);
+			HR2SEC(tv), v, HR2SEC(res) / 2);
 	} else {
-		fprintf(stderr, "fail sec = %ld\n", tv.tv_sec);
+		fprintf(stderr, "fail sec = %ld\n", HR2SEC(tv));
 		exit(EXIT_FAILURE);
 	}
 
 	/* multi100 covers 1..10000 seconds */
-	tv.tv_sec = LIMIT - 1000 - 1;
-	n = dbrrd_query(h, &tv, &p, &res);
+	tv = SEC2HR(LIMIT - 1000 - 1);
+	n = dbrrd_query(h, tv, &p, &res);
 	if (n) {
 		v = *(float *)p;
 		fprintf(stderr, "%10ld %g +-%ld seconds\n",
-			tv.tv_sec, v, res.tv_sec / 2);
+			HR2SEC(tv), v, HR2SEC(res) / 2);
 	} else {
-		fprintf(stderr, "fail sec = %ld\n", tv.tv_sec);
+		fprintf(stderr, "fail sec = %ld\n", HR2SEC(tv));
 		exit(EXIT_FAILURE);
 	}
-	tv.tv_sec = LIMIT - 10000;
-	n = dbrrd_query(h, &tv, &p, &res);
+	tv = SEC2HR(LIMIT - 10000);
+	n = dbrrd_query(h, tv, &p, &res);
 	if (n) {
 		v = *(float *)p;
 		fprintf(stderr, "%10ld %g +-%ld seconds\n",
-			tv.tv_sec, v, res.tv_sec / 2);
+			HR2SEC(tv), v, HR2SEC(res) / 2);
 	} else {
-		fprintf(stderr, "fail sec = %ld\n", tv.tv_sec);
+		fprintf(stderr, "fail sec = %ld\n", HR2SEC(tv));
 		exit(EXIT_FAILURE);
 	}
 
 	/* multi1000 covers 1..100000 seconds */
-	tv.tv_sec = LIMIT - 10000 - 1;
-	n = dbrrd_query(h, &tv, &p, &res);
+	tv = SEC2HR(LIMIT - 10000 - 1);
+	n = dbrrd_query(h, tv, &p, &res);
 	if (n) {
 		v = *(float *)p;
 		fprintf(stderr, "%10ld %g +-%ld seconds\n",
-			tv.tv_sec, v, res.tv_sec / 2);
+			HR2SEC(tv), v, HR2SEC(res) / 2);
 	} else {
-		fprintf(stderr, "fail sec = %ld\n", tv.tv_sec);
+		fprintf(stderr, "fail sec = %ld\n", HR2SEC(tv));
 		exit(EXIT_FAILURE);
 	}
-	tv.tv_sec = LIMIT - 100000;
-	n = dbrrd_query(h, &tv, &p, &res);
+	tv = SEC2HR(LIMIT - 100000);
+	n = dbrrd_query(h, tv, &p, &res);
 	if (n) {
 		v = *(float *)p;
 		fprintf(stderr, "%10ld %g +-%ld seconds\n",
-			tv.tv_sec, v, res.tv_sec / 2);
+			HR2SEC(tv), v, HR2SEC(res) / 2);
 	} else {
-		fprintf(stderr, "fail sec = %ld\n", tv.tv_sec);
+		fprintf(stderr, "fail sec = %ld\n", HR2SEC(tv));
 		exit(EXIT_FAILURE);
 	}
 
 	/* This query is earlier than our time space */
-	tv.tv_sec = 150000 - 100000 - 1;
-	n = dbrrd_query(h, &tv, &p, &res);
+	tv = SEC2HR(150000 - 100000 - 1);
+	n = dbrrd_query(h, tv, &p, &res);
 	if (n) {
-		fprintf(stderr, "should have failed at sec = %ld\n", tv.tv_sec);
+		fprintf(stderr, "should have failed at sec = %ld\n",
+			HR2SEC(tv));
 		exit(EXIT_FAILURE);
 	}
 
@@ -545,7 +547,7 @@ txg_zero(rrd_t *r, void *p)
 }
 
 void
-txg_add_at(rrd_t *h, uint64_t v, struct timeval *tv)
+txg_add_at(rrd_t *h, uint64_t v, hrtime_t tv)
 {
 	txg_store_t s;
 	s.l = s.h = v;
@@ -562,8 +564,8 @@ txg_add_at(rrd_t *h, uint64_t v, struct timeval *tv)
 void
 txg1(rrd_t *h)
 {
-	struct timeval tv = { 0, 0};
-	struct timeval res;
+	hrtime_t tv = 0;
+	hrtime_t res;
 	uint64_t txg = 0;
 	int i, r;
 	txg_store_t *ptxg;
@@ -575,21 +577,21 @@ txg1(rrd_t *h)
 	 * Our txgs begin at 1 and monotonically ascend.
 	 */
 	for (i = 0; i < 60; ++i) {
-		tv.tv_sec = i;
-		txg_add_at(h, ++txg, &tv);
+		tv = SEC2HR(i);
+		txg_add_at(h, ++txg, tv);
 	}
 	/*
 	 * Query midpoint of the minute... 30 seconds.
 	 */
-	tv.tv_sec = 30;
-	r = dbrrd_query(h, &tv, &p, &res);
+	tv = SEC2HR(30);
+	r = dbrrd_query(h, tv, &p, &res);
 	if (r == 0) {
 		fprintf(stderr, "txg1: query at 30 seconds failed\n");
 		exit(EXIT_FAILURE);
 	}
 	ptxg = (txg_store_t *)p;
 	fprintf(stderr, "query at 30 seconds\n");
-	fprintf(stderr, "  res: %ld\n", res.tv_sec);
+	fprintf(stderr, "  res: %ld\n", HR2SEC(res));
 	fprintf(stderr, "  l: %lu h: %lu\n", ptxg->l, ptxg->h);
 	/*
 	 * Fill in 60..LIMIT
@@ -609,8 +611,8 @@ txg1(rrd_t *h)
 	 * txg per second, 18.6 seconds appears reasonable.
 	 */
 	for (i = 60; i < LIMIT; ++i) {
-		tv.tv_sec = i;
-		txg_add_at(h, ++txg, &tv);
+		tv = SEC2HR(i);
+		txg_add_at(h, ++txg, tv);
 	}
 	/*
 	 * We will now issue queries:
@@ -619,48 +621,48 @@ txg1(rrd_t *h)
 	 * 86400 seconds in the past (retrieve from day)
 	 * 31536000 seconds in the past (retrieve from years)
 	 */
-	tv.tv_sec = LIMIT + 1; /* 1 second in future */
-	r = dbrrd_query(h, &tv, &p, &res);
+	tv = SEC2HR(LIMIT + 1); /* 1 second in future */
+	r = dbrrd_query(h, tv, &p, &res);
 	if (r == 1) {
 		fprintf(stderr, "txg1: at future worked?\n");
 		exit(EXIT_FAILURE);
 	}
 
-	tv.tv_sec = LIMIT - 30; /* 30 seconds in the past */
-	r = dbrrd_query(h, &tv, &p, &res);
+	tv = SEC2HR(LIMIT - 30); /* 30 seconds in the past */
+	r = dbrrd_query(h, tv, &p, &res);
 	if (r == 0) {
 		fprintf(stderr, "txg1: at 30 seconds in the past failed?\n");
 		exit(EXIT_FAILURE);
 	}
 	ptxg = (txg_store_t *)p;
 	fprintf(stderr, "query at 30 seconds in the past\n");
-	fprintf(stderr, "  res: %ld\n", res.tv_sec);
+	fprintf(stderr, "  res: %ld\n", HR2SEC(res));
 	fprintf(stderr, "  l: %lu h: %lu\n", ptxg->l, ptxg->h);
 
-	tv.tv_sec = LIMIT - 86400 - 30; /* One day in the past */
-	r = dbrrd_query(h, &tv, &p, &res);
+	tv = SEC2HR(LIMIT - 86400 - 30); /* One day in the past */
+	r = dbrrd_query(h, tv, &p, &res);
 	if (r == 0) {
 		fprintf(stderr, "txg1: at 1 day in the past failed?\n");
 		exit(EXIT_FAILURE);
 	}
 	ptxg = (txg_store_t *)p;
 	fprintf(stderr, "query at 1 day in the past\n");
-	fprintf(stderr, "  res: %ld\n", res.tv_sec);
+	fprintf(stderr, "  res: %ld\n", HR2SEC(res));
 	fprintf(stderr, "  l: %lu h: %lu\n", ptxg->l, ptxg->h);
 
-	tv.tv_sec = LIMIT - 31536000 - 30; /* One year in the past */
-	r = dbrrd_query(h, &tv, &p, &res);
+	tv = SEC2HR(LIMIT - 31536000 - 30); /* One year in the past */
+	r = dbrrd_query(h, tv, &p, &res);
 	if (r == 0) {
 		fprintf(stderr, "txg1: at 1 year in the past failed?\n");
 		exit(EXIT_FAILURE);
 	}
 	ptxg = (txg_store_t *)p;
 	fprintf(stderr, "query at 1 year in the past\n");
-	fprintf(stderr, "  res: %ld\n", res.tv_sec);
+	fprintf(stderr, "  res: %ld\n", HR2SEC(res));
 	fprintf(stderr, "  l: %lu h: %lu\n", ptxg->l, ptxg->h);
 
-	tv.tv_sec = LIMIT - (11*31536000) - 30; /* 11 years in the past */
-	r = dbrrd_query(h, &tv, &p, &res);
+	tv = SEC2HR(LIMIT - (11*31536000) - 30); /* 11 years in the past */
+	r = dbrrd_query(h, tv, &p, &res);
 	if (r == 1) {
 		fprintf(stderr, "txg1: 11 years should be aged out?\n");
 		exit(EXIT_FAILURE);
@@ -690,19 +692,19 @@ txg_test(void)
 	 * Space taken is under 20K bytes.
 	 */
 	dbrrd_spec_t dbrrd_periods[] = {
-		{   10, { 31536000, 0 } }, /* 10 years */
-		{  365, {    86400, 0 } }, /* 365 days - 1 year in day brackets */
-		{ 1440, {       60, 0 } }, /* 1440 minutes - 1 day in minute brackets */
-		{ 0, { 0, 0 } }, 
+		{   10, SEC2HR(31536000) }, /* 10 years */
+		{  365, SEC2HR(86400) },    /* 365 days -
+		                             *   1 year in day brackets
+			       		     */
+		{ 1440, SEC2HR(60) },       /* 1440 minutes -
+		                             *   1 day in minute brackets
+					     */
+		{ 0, 0 }, 
 	};
 
 	fprintf(stderr,"txg_test\n");
 	h = dbrrd_create("txg", dbrrd_periods, sizeof(txg_store_t),
 		txg_update, txg_zero);
-	/*
-	 * FIXME: we are not actually filling or querying yet.
-	 * Need to add the test vector.
-	 */
 	txg1(h);
 	dbrrd_destroy(h);
 	fprintf(stderr,"txg_test complete\n");

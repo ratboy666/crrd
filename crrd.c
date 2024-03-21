@@ -27,31 +27,30 @@
  * Each data point needs to be added to each of the rrds. Each rrd
  * simply uses a wider period. The slots are used round robin.
  *
- * Two compile modes: STANDALONE and KERNEL. In STANDALONE, runs in
- * user space. KERNEL runs in the kernel.
- *
- * Uses malloc() free() memcpy() are used in both modes.
+ * TESTING defined means we are running in user space for testing.
  *
  * Fred Weigel, March 2024
  * From an idea by Allan Jude
  */
 
-/*#define STANDALONE*/
-
-#include <stddef.h>
-#include <string.h>
-#include <stdlib.h>
-#ifdef STANDALONE
-#include <stdio.h>
-#include <time.h>
+#ifdef TESTING
+#  include <stddef.h>
+#  include <string.h>
+#  include <stdlib.h>
+#  include <stdio.h>
+#  include <time.h>
+#  include "crrd.h"
+#else
+#  include <sys/zfs_context.h>
+#  include <sys/crrd.h>
 #endif
-#include "crrd.h"
 
 /* Average */
 static void
 default_update(rrd_t *r, void *pv)
 {
-#ifdef STANDALONE
+	r = r; pv = pv;
+#ifdef TESTING
 	fprintf(stderr, "update function not filled in\n");
 	exit(EXIT_FAILURE);
 #endif
@@ -61,30 +60,11 @@ default_update(rrd_t *r, void *pv)
 static
 void default_zero(rrd_t *r, void *pv)
 {
-#ifdef STANDALONE
+	r = r; pv = pv;
+#ifdef TESTING
 	fprintf(stderr, "zero function not filled in\n");
 	exit(EXIT_FAILURE);
 #endif
-}
-
-/*
- * Convert timeval to rrdt_t. Since we may want to use blocks of time
- * less than a second, we convert timeval to rrdt_t. Type rrdt_t replaces
- * time_t
- */
-rrdt_t
-tv2rrdt(struct timeval *tv)
-{
-	return (tv->tv_sec * 1000) + (tv->tv_usec / 1000);
-}
-
-/* Convert rrdt to timeval */
-void
-rrdt2tv(struct timeval *tv, rrdt_t rt)
-{
-	tv->tv_sec = rt / 1000;
-	rt %= 1000;
-	tv->tv_usec = rt * 1000;
 }
 
 /*
@@ -92,10 +72,10 @@ rrdt2tv(struct timeval *tv, rrdt_t rt)
  * find_period() returns the start of the period for the specific time.
  * The next period is period + tperiod.
  */ 
-static rrdt_t
-find_period(rrdt_t time, rrdt_t tperiod)
+static hrtime_t
+find_period(hrtime_t time, hrtime_t tperiod)
 {
-	rrdt_t rem;
+	hrtime_t rem;
 
 	rem = time % tperiod;
 	time -= rem;
@@ -131,16 +111,23 @@ rrd_tail(rrd_t *r)
 
 /* Create a new rrd of capacity with resolution res */
 rrd_t *
-rrd_create(char *s, struct timeval *res, unsigned cap, size_t sz)
+rrd_create(char *s, hrtime_t res, unsigned cap, size_t sz)
 {
 	rrd_t *r;
+	size_t asize;
 
+	asize = sizeof (struct rrd) + (cap * sz);
+#ifdef TESTING
 	r = malloc(sizeof (struct rrd) + (cap * sz));
+#else
+	r = kmem_alloc(asize, KM_SLEEP);	
+#endif
 	if (r == NULL) {
 		return (NULL);
 	}
 	r->name = s;
-	r->resolution = tv2rrdt(res);
+	r->asize = asize;
+	r->resolution = res;
 	r->next = NULL;
 	r->start = r->last = 0;
 	r->capacity = cap;
@@ -164,18 +151,15 @@ rrd_len(rrd_t *r)
 	if (r->head > r->tail) {
 		return (r->capacity - r->head + r->tail + 1);
 	}
-#ifdef STANDALONE
+#ifdef TESTING
 	fprintf(stderr, "rrd_len: impossible\n");
 	exit(EXIT_FAILURE);
 #endif
 	return (0);
 }
 
-/*
- * Return resolution - type rrdt_t Usually in milliseconds, but may
- * be another unit, depending on application.
- */
-rrdt_t
+/* * Return resolution */
+hrtime_t
 rrd_resolution(rrd_t *r)
 {
 	return (r->resolution);
@@ -192,7 +176,7 @@ rrd_capacity(rrd_t *r)
 void
 rrd_debug(rrd_t *r)
 {
-#ifdef STANDALONE
+#ifdef TESTING
 	fprintf(stderr, "rrd_debug:    %p\n",  r);
 	fprintf(stderr, "  name:       %s\n",  r->name);
 	fprintf(stderr, "  resolution: %ld\n", r->resolution);
@@ -203,6 +187,8 @@ rrd_debug(rrd_t *r)
 	fprintf(stderr, "  entries:    %p\n",  r->entries);
 	fprintf(stderr, "  size:       %lu\n", r->size);
 	fprintf(stderr, "  len:        %d\n",  rrd_len(r));
+#else
+	r = r;
 #endif
 }
 
@@ -210,7 +196,13 @@ rrd_debug(rrd_t *r)
 void
 rrd_destroy(rrd_t *r)
 {
-	free(r);
+	if (r) {
+#ifdef TESTING
+		free(r);
+#else
+		kmem_free(r, r->asize);
+#endif
+	}
 }
 
 /* Store value into rrd at tail */
@@ -226,12 +218,9 @@ void rrd_store(rrd_t *r, void *v)
  * the rrd
  */
 void
-rrd_add_at(rrd_t *r, void *v, struct timeval *tv)
+rrd_add_at(rrd_t *r, void *v, hrtime_t t)
 {
-	rrdt_t t, t0;
-
-	/* Convert struct timeval to rrdt_t */
-	t = tv2rrdt(tv);
+	hrtime_t t0;
 
 	/*
 	 * t0 is the beginning of the period for this time
@@ -256,12 +245,11 @@ rrd_add_at(rrd_t *r, void *v, struct timeval *tv)
 	/*
 	 * Are we in current period? Yes, do running average.
 	 *
-	 * FIXME - note that we keep running average (or whatever
-	 * it is programmed) ONLY for a single period. The sample
-	 * may extend into the next period, or last! But, we cannot
-	 * really know .. we could smear a bit into the past, or
-	 * open the next period... but, I want to push all of that
-	 * (if needed) into the update() function used.
+	 * All calculation for the "running average" or other
+	 * accumulation is pushed into update().
+	 *
+	 * We may sill want to smear the past which is not
+	 * accomodated yet.
 	 */
 	if (t0 == r->start) {
 		r->start = t0;
@@ -316,10 +304,18 @@ rrd_get(rrd_t *r, int i)
 void
 rrd_add(rrd_t *r, void *v)
 {
-	struct timeval now;
+	hrtime_t t;
 
+#ifdef TESTING
+#  define SEC2NSEC(n) (n * 1000LL * 1000LL * 1000LL)
+#  define USEC2NSEC(n) (n * 1000LL)
+	struct timeval now;
 	gettimeofday(&now, NULL);
-	rrd_add_at(r, v, &now);
+	t = SEC2NSEC(now.tv_sec) + USEC2NSEC(now.tv_usec);
+#else
+	t = gethrtime();
+#endif
+	rrd_add_at(r, v, t);
 }
 
 /* Set callbacks */
@@ -339,7 +335,7 @@ rrd_setfunctions(rrd_t *r, void *fupdate, void *fzero)
  * The rrds are linked together -- most precise first, and ordered.
  * We find the first rrd that covers our time.
  */
-int dbrrd_query(rrd_t *r, struct timeval *tv, void **vp, struct timeval *res)
+int dbrrd_query(rrd_t *r, hrtime_t tv, void **vp, hrtime_t *res)
 {
 	rrdt_t t, t0, start;
 	int i;
@@ -369,12 +365,15 @@ int dbrrd_query(rrd_t *r, struct timeval *tv, void **vp, struct timeval *res)
 		 */
 		start = r->start - (r->resolution * (rrd_len(r) - 1));
 
-		/* Is the query time within the coverage of this rrd? */
+		/*
+		 * Is the query time within the coverage of this rrd?
+		 * Since the rrds are to be linked in increasing period
+		 * the first match will be the most precise one.
+		 */
 		if (t0 >= start) {
-
 			i = (t0 - start) / r->resolution;
 			*vp = rrd_get(r, i);
-			rrdt2tv(res, r->resolution);
+			res = r->resolution;
 			return (1);
 		}
 
@@ -389,7 +388,7 @@ int dbrrd_query(rrd_t *r, struct timeval *tv, void **vp, struct timeval *res)
 }
 
 void
-dbrrd_add_at(rrd_t *r, void *vp, struct timeval *t)
+dbrrd_add_at(rrd_t *r, void *vp, hrtime_t t)
 {
 	while (r != NULL) {
 	    rrd_add_at(r, vp, t);
@@ -400,10 +399,17 @@ dbrrd_add_at(rrd_t *r, void *vp, struct timeval *t)
 void
 dbrrd_add(rrd_t *r, void *v)
 {
-	struct timeval now;
+	hrtime_t t;
 
+#ifdef TESTING
+	struct timeval now;
 	gettimeofday(&now, NULL);
-	dbrrd_add_at(r, v, &now);
+	t = SEC2NSEC(now.tv_sec) + USEC2NSEC(now.tv_usec);
+#else
+	t = gethrtime();
+#endif
+
+	dbrrd_add_at(r, v, t);
 }
 
 void
@@ -426,9 +432,9 @@ dbrrd_create(char *name, dbrrd_spec_t *p, size_t sz, void *update, void *zero)
 
 	h = NULL;
 	while (p->capacity > 0) {
-		r = rrd_create(name, &p->tv, p->capacity, sz);
+		r = rrd_create(name, p->tv, p->capacity, sz);
 		if (r == NULL) {
-#ifdef STANDALONE
+#ifdef TESTING
 			fprintf(stderr, "rrd_create failed\n");
 #endif
 			if (h != NULL) {
