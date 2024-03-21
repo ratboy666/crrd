@@ -337,13 +337,11 @@ rrd_setfunctions(rrd_t *r, void *fupdate, void *fzero)
  */
 int dbrrd_query(rrd_t *r, hrtime_t tv, void **vp, hrtime_t *res)
 {
-	rrdt_t t, t0, start;
+	hrtime_t t0, start;
 	int i;
 
-	t = tv2rrdt(tv);
-
 	/* Find for time in future fails */
-	if (t > r->last) {
+	if (tv > r->last) {
 		return (0);
 	}
 
@@ -357,7 +355,7 @@ int dbrrd_query(rrd_t *r, hrtime_t tv, void **vp, hrtime_t *res)
 
 	while (r != NULL) {
 
-		t0 = find_period(t, r->resolution);
+		t0 = find_period(tv, r->resolution);
 
 		/*
 		 * Time start for this rdd (may not be full). r->start
@@ -373,7 +371,7 @@ int dbrrd_query(rrd_t *r, hrtime_t tv, void **vp, hrtime_t *res)
 		if (t0 >= start) {
 			i = (t0 - start) / r->resolution;
 			*vp = rrd_get(r, i);
-			res = r->resolution;
+			*res = r->resolution;
 			return (1);
 		}
 
